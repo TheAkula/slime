@@ -4,15 +4,16 @@ use std::{io::Error, fs};
 
 use crate::Row;
 use crate::Position;
+use crate::editor::SearchDir;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Document {
   pub path: Option<String>,
   rows: Vec<Row>,
   dirty: bool,
 }
 
-impl Document {
+impl Document {    
   pub fn open(path: &str) -> Result<Self, Error> {
     let contents = fs::read_to_string(path)?;
     let mut rows = Vec::new();
@@ -63,8 +64,7 @@ impl Document {
     }
   }  
   pub fn delete(&mut self, at: &Position<usize>) {
-    if at.y < self.rows_size() {               
-
+    if at.y < self.rows_size() {                     
       if at.y < self.rows_size() - 1 {
         if let [prev_row, row, ..] = &mut self.rows[(at.y)..(at.y + 2)] {        
           if at.x == prev_row.size() {
@@ -91,10 +91,49 @@ impl Document {
 
     self.dirty = false;
     Ok(())
-  }  
+  }
   pub fn is_dirty(&self) -> bool {
     self.dirty
-  } 
+  }
+  pub fn find(&self, query: &str, at: &Position<usize>, direction: SearchDir) -> Option<Position<usize>> {    
+    if at.y > self.rows_size() {
+      return None
+    }
+
+    let start = if direction == SearchDir::Forward {
+      at.y
+    } else {
+      0
+    };
+
+    let end = if direction == SearchDir::Forward {
+      self.rows_size()      
+    } else {
+      at.y.saturating_add(1)
+    };
+
+    let mut position = Position { x: at.x, y: at.y };
+
+    for _ in start..end {
+      if let Some(row) = self.row(position.y) {
+        if let Some(x) = row.find(query, position.x, direction) {
+          position.x = x;
+          return Some(position);
+        }
+        if direction == SearchDir::Forward {
+          position.y = position.y.saturating_add(1);
+          position.x = 0;
+        } else {
+          position.y = position.y.saturating_sub(1);
+          position.x = self.rows[position.y].size();
+        }
+      } else {
+        return None;
+      }
+    }
+    
+    None
+  }
   fn row_mut(&mut self, index: usize) -> Option<&mut Row> {
     if index < self.rows.len() {
       Some(&mut self.rows[index])
@@ -102,7 +141,7 @@ impl Document {
       None
     }
   }  
-  fn insert_enter_key(&mut self, at: &Position<usize>) {
+  fn insert_enter_key(&mut self, at: &Position<usize>) {          
     if at.y < self.rows_size() {
       let row = self.row_mut(at.y).unwrap();
 
@@ -111,7 +150,6 @@ impl Document {
         new_row.insert_str(0, &slice);        
       }
       self.rows.insert(at.y + 1, new_row);
-    }    
+    }  
   }  
 }
-

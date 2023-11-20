@@ -29,6 +29,13 @@ impl StatusMessage {
   }
 }
 
+#[derive(PartialEq, Copy, Clone)]            
+
+pub enum SearchDir {
+  Forward,
+  Backward,
+}
+
 pub struct Editor {
   should_quit: bool,  
   terminal: Terminal,
@@ -36,7 +43,7 @@ pub struct Editor {
   cursor_offset: Position<usize>,
   document: Document,
   status_message: StatusMessage,
-  quit_times: u8,
+  quit_times: u8,  
 }
 
 const STATUS_BAR_BG: Color = Color::Rgb { r: 239, g: 239, b: 239 };
@@ -87,7 +94,7 @@ impl Editor {
       document,
       cursor_offset: Position::default(), 
       status_message: StatusMessage::from(initial_status),    
-      quit_times: QUIT_TIMES, 
+      quit_times: QUIT_TIMES,       
     })
   }
 
@@ -176,12 +183,51 @@ impl Editor {
     Ok(())
   }
 
-  fn prompt(&mut self, prompt: &str) -> Result<Option<String>, Error> {
+  fn search(&mut self) {
+    let old_position = self.cursor_position.clone();
+    let mut search_dir = SearchDir::Forward;
+    
+    let query = self
+      .prompt("Search: ", |editor, key_event, query| {
+        let mut moved = false;
+
+        match key_event.code {
+          KeyCode::Right | KeyCode::Down => {
+            search_dir = SearchDir::Forward;
+            editor.process_move(KeyCode::Right)?;
+            moved = true;
+          },
+          KeyCode::Up | KeyCode::Left => search_dir = SearchDir::Backward,
+          _ => search_dir = SearchDir::Forward,
+        }  
+
+        if let Some(position) = editor.document.find(&query[..], &editor.cursor_position, search_dir) {
+          editor.cursor_position = position;
+          editor.scroll();         
+        } else if moved {
+          editor.process_move(KeyCode::Left)?;
+        }
+
+        Ok(())
+      }).unwrap_or(None); 
+
+    if query.is_none() {      
+      self.status_message = StatusMessage::from("Find aborted".to_string());
+      self.cursor_position = old_position;
+      self.scroll();
+    }
+  }
+
+  fn prompt<C>(&mut self, prompt: &str, mut callback: C) -> Result<Option<String>, Error>
+  where
+    C: FnMut(&mut Self, KeyEvent, &String) -> Result<(), Error>
+  {
     let mut result = String::new();
-    loop {
+    let mut run_prompt = true;
+    while run_prompt {
       self.status_message = StatusMessage::from(format!("{}{}", prompt, result));
       self.refresh_screen()?;
-
+      
       if let Some(event) = self.terminal.read_event()? {
         match event {
           Event::Key(key_event) => {
@@ -189,7 +235,7 @@ impl Editor {
               KeyEvent{code: KeyCode::Char('j'), modifiers: KeyModifiers::CONTROL, ..}
                 | KeyEvent{code: KeyCode::Enter, ..} => {
                 self.status_message = StatusMessage::from(String::new());
-                break; 
+                run_prompt = false; 
               },              
               _ => match key_event.code {
                 KeyCode::Char(c) => {
@@ -200,14 +246,15 @@ impl Editor {
                 },
                 KeyCode::Esc => {
                   result.truncate(0);
-                  break;
+                  run_prompt = false;
                 },
                 _ => {}
               }              
             }
+            callback(self, key_event, &result)?;
           },
           _ => {}          
-        }
+        }        
       }
     }
 
@@ -273,7 +320,7 @@ impl Editor {
 
   fn save(&mut self) {
     if self.document.path.is_none() {
-      let file_name = self.prompt("Save as: ").unwrap_or(None);
+      let file_name = self.prompt("Save as: ", |_, _, _| { Ok(()) }).unwrap_or(None);
       if file_name.is_none() {
         self.status_message = StatusMessage::from("Save aborted".to_string());
         return;
@@ -311,20 +358,36 @@ impl Editor {
       },
       // Ctrl-S
       KeyEvent{modifiers: KeyModifiers::CONTROL, code: KeyCode::Char('s'), ..} => self.save(),
+      // Ctrl-F
+      KeyEvent{modifiers: KeyModifiers::CONTROL, code: KeyCode::Char('f'), ..} => self.search(),
+      // Ctrl-END
+      KeyEvent{modifiers: KeyModifiers::CONTROL, code: KeyCode::End, ..} => {
+        let last_index = self.document.rows_size().saturating_sub(1);
+        if let Some(last_row) = self.document.row(last_index) {
+          self.cursor_position = Position {
+            x: last_row.size(),
+            y: last_index,
+          }
+        }
+      },
+      // Ctrl-HOME
+      KeyEvent{modifiers: KeyModifiers::CONTROL, code: KeyCode::Home, ..} => {
+        self.cursor_position = Position {x: 0, y: 0};
+      },
       _ => match event.code {
         KeyCode::Char(c) => {          
           self.document.insert(&self.cursor_position, c);
           self.process_move(KeyCode::Right)?;                  
         },               
         KeyCode::Backspace => {                
-          self.process_move(KeyCode::Left)?;
           if !(self.cursor_position.x == 0 && self.cursor_position.y == 0) {
+            self.process_move(KeyCode::Left)?;          
             self.document.delete(&self.cursor_position);
           }
         },
         KeyCode::Delete => {
           self.document.delete(&self.cursor_position);        
-        },              
+        },                      
         KeyCode::Up
           | KeyCode::Down
           | KeyCode::Left 
